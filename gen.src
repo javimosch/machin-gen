@@ -1,0 +1,183 @@
+// machin-gen — template engine in machin (MFL).
+// Single native binary, no dependencies.
+//
+// Usage:
+//   machin-gen "Hello {{name}}!" name=World
+//   machin-gen "{{name|upper}}" name=hello
+//   machin-gen -f template.txt name=World
+//
+// Template syntax:
+//   {{key}}          — replaced with value
+//   {{key|transform}} — replaced with transformed value
+//   {{key|transform|transform2}} — piped through multiple transforms
+
+// ---- transform functions (stored as closures in a map) ----
+
+var transforms = make(map[string]func)
+
+func init_transforms() {
+    transforms["upper"] = func(s) { return to_upper(s) }
+    transforms["lower"] = func(s) { return to_lower(s) }
+    transforms["reverse"] = func(s) {
+        n := len(s)
+        out := ""
+        i := n - 1
+        while i >= 0 {
+            out = out + charat(s, i)
+            i = i - 1
+        }
+        return out
+    }
+    transforms["trim"] = func(s) { return trim(s) }
+    transforms["len"] = func(s) { return str(len(s)) }
+    transforms["hex"] = func(s) { return to_hex(bytes(s)) }
+}
+
+// ---- template processing ----
+
+func apply_transform(name, val) (result) {
+    if has(transforms, name) {
+        f := transforms[name]
+        result = f(val)
+    } else {
+        result = val
+    }
+}
+
+func process_template(template, vars) (result) {
+    result = template
+    // Find all {{...}} patterns
+    searching := true
+    while searching {
+        start := index(result, "{{")
+        if start < 0 {
+            searching = false
+            break
+        }
+        end := index(result, "}}")
+        if end < 0 || end < start {
+            searching = false
+            break
+        }
+
+        // Extract the expression inside {{...}}
+        expr := substr(result, start + 2, end)
+        expr_end := end + 2
+
+        // Split by pipe for transforms
+        pipe_idx := index(expr, "|")
+        key := expr
+        transforms_list := []string{}
+
+        if pipe_idx >= 0 {
+            key = substr(expr, 0, pipe_idx)
+            // Collect all transforms after the first pipe
+            remaining := substr(expr, pipe_idx + 1, len(expr))
+            transforms_list = split(remaining, "|")
+        }
+
+        // Look up value
+        val := ""
+        if has(vars, key) {
+            val = vars[key]
+        }
+
+        // Apply transforms in order
+        t := 0
+        while t < len(transforms_list) {
+            val = apply_transform(transforms_list[t], val)
+            t = t + 1
+        }
+
+        // Replace the placeholder
+        placeholder := substr(result, start, expr_end)
+        result = replace(result, placeholder, val)
+    }
+}
+
+// ---- file reading ----
+
+func read_template(path) (content) {
+    content = read_file(path)
+    if len(content) == 0 {
+        content = ""
+    }
+}
+
+// ---- main ----
+
+func main() {
+    init_transforms()
+
+    template := ""
+    use_file := false
+    vars := make(map[string]string)
+
+    a := args()
+    if len(a) < 2 {
+        print_help()
+        exit(0)
+    }
+
+    // Check for -h / --help first
+    if len(a) >= 2 {
+        if a[1] == "-h" || a[1] == "--help" {
+            print_help()
+            exit(0)
+        }
+    }
+
+    // Parse args
+    i := 1
+    n := len(a)
+
+    // Check for -f flag
+    if a[i] == "-f" && i + 1 < n {
+        use_file = true
+        template = read_template(a[i + 1])
+        i = i + 2
+    } else {
+        template = a[i]
+        i = i + 1
+    }
+
+    // Parse key=value pairs
+    while i < n {
+        pair := a[i]
+        if pair == "-h" || pair == "--help" {
+            print_help()
+            exit(0)
+        }
+        eq := index(pair, "=")
+        if eq > 0 {
+            key := substr(pair, 0, eq)
+            val := substr(pair, eq + 1, len(pair))
+            vars[key] = val
+        } else {
+            println("error: expected key=value, got: " + pair)
+            exit(1)
+        }
+        i = i + 1
+    }
+
+    result := process_template(template, vars)
+    println(result)
+}
+
+func print_help() {
+    println("machin-gen — template engine")
+    println("")
+    println("Usage: machin-gen <template> [key=value ...]")
+    println("       machin-gen -f <file> [key=value ...]")
+    println("")
+    println("  Template syntax:")
+    println("    {{key}}          replaced with value")
+    println("    {{key|upper}}    transformed: upper, lower, reverse, trim, len, hex")
+    println("    {{key|upper|reverse}}  piped transforms")
+    println("")
+    println("  Examples:")
+    println("    machin-gen \"Hello {{name}}!\" name=World")
+    println("    machin-gen \"{{name|upper}}\" name=hello")
+    println("    machin-gen -f greeting.txt name=World")
+    println("  -h, --help    show this help")
+}
